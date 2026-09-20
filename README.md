@@ -132,4 +132,4 @@ docker compose build --build-arg OMNIROUTE_VERSION=<new-version> \
 
 OmniRoute itself is MIT-licensed, by
 [diegosouzapw](https://github.com/diegosouzapw/OmniRoute). This repo only
-packages it; it carries no license of its own yet.
+packages it, and the packaging is MIT-licensed too — see [LICENSE](LICENSE).
