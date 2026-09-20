@@ -1,0 +1,74 @@
+# Standalone OmniRoute LLM gateway — a shared local utility, like
+# cp-kafka-kafdrop next to it. Bring it up once and leave it running; any
+# project that wants an OpenAI-compatible endpoint points at it.
+#
+#   docker compose up -d --build     # first run (build takes a few minutes)
+#   docker compose up -d             # every run after
+#   docker compose down              # stop, keep providers + keys
+#   docker compose down -v           # stop and WIPE providers + keys
+#
+# Clients reach it at http://localhost:20128/v1 from the host, and at
+# http://host.docker.internal:20128/v1 from inside another compose stack.
+#
+# Configuration lives in .env in this folder (copy .env.example). Upstream
+# provider credentials are NOT here — they live in the gateway's own encrypted
+# SQLite store on the omniroute-data volume, added via the dashboard or
+# `docker compose exec omniroute omniroute keys add <provider> --stdin`.
+
+name: omniroute
+
+services:
+  omniroute:
+    build:
+      context: .
+    env_file: .env
+    environment:
+      # Set here rather than left to .env so the server and its volume cannot
+      # disagree about where the SQLite store lives: DATA_DIR is what the mount
+      # below is for, and an override in .env meant for a host install would
+      # silently strand the container's data elsewhere.
+      DATA_DIR: /data
+      PORT: 20128
+      # Next.js binds to $$HOSTNAME, which Docker sets to the container id — so
+      # by default the gateway listens on eth0 only and refuses its own
+      # loopback. Published ports still work (Docker forwards to the container
+      # IP), which makes this look fine from outside while the healthcheck
+      # below and every in-container CLI call get ECONNREFUSED.
+      HOSTNAME: 0.0.0.0
+      # This service's own CLI reads OMNIROUTE_BASE_URL, and a client value
+      # ending in /v1 makes `omniroute <cmd>` build /v1/api/… and 404. Point the
+      # in-container CLI at the server it lives in.
+      OMNIROUTE_BASE_URL: http://127.0.0.1:20128
+    volumes:
+      # Named, not a bind mount of ~/.omniroute: the container gets its own
+      # store rather than sharing SQLite with a host install (two writers, one
+      # file). Survives `down`; `down -v` wipes the routing config and the
+      # gateway API keys, which then have to be recreated.
+      - omniroute-data:/data
+    ports:
+      # Loopback-only on purpose. OmniRoute's inference plane (/v1/*) answers
+      # without an API key unless REQUIRE_API_KEY=true, and every request it
+      # serves is billed to the upstream providers configured inside it — so
+      # binding 0.0.0.0 would hand any device on the network a spend endpoint.
+      # Publish wider only together with REQUIRE_API_KEY=true in .env.
+      - "127.0.0.1:${OMNIROUTE_PUBLISH_PORT:-20128}:20128"
+    healthcheck:
+      # Deliberately the unauthenticated liveness endpoint: this answers "is the
+      # gateway up", and must not depend on a key.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:20128/api/monitoring/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  # OmniRoute's SQLite store: routing config, AES-256-GCM encrypted upstream
+  # provider credentials, and the gateway API keys clients authenticate with.
+  omniroute-data:
